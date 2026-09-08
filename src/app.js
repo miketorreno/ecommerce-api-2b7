@@ -4,9 +4,14 @@ import express from 'express'
 import morgan from 'morgan'
 
 import { createCatalogRepository } from './db/repositories/catalog.js'
+import { createAuthRepository } from './db/repositories/auth.js'
+import { createEmailRepository } from './db/repositories/email.js'
 import { createHealthRepository } from './db/repositories/health.js'
+import { createEmailService } from './email/index.js'
 import { sendProblem } from './http/problem.js'
+import { createAuthRouter } from './routes/auth.js'
 import { createCatalogRouter } from './routes/catalog.js'
+import { createAuthService } from './services/auth.js'
 
 export function createApp({ pool, config = {}, logger = console }) {
   const appEnv = config.appEnv ?? process.env.APP_ENV ?? 'development'
@@ -29,6 +34,10 @@ export function createApp({ pool, config = {}, logger = console }) {
 
   const healthRepository = createHealthRepository(pool)
   const catalogRepository = createCatalogRepository(pool)
+  const authRepository = createAuthRepository(pool)
+  const emailRepository = createEmailRepository(pool)
+  const emailService = createEmailService({ emailRepository, logger })
+  const authService = createAuthService({ authRepository, emailService, config })
 
   app.get('/', (req, res) => {
     res.send('Welcome to the eCommerce API')
@@ -44,6 +53,7 @@ export function createApp({ pool, config = {}, logger = console }) {
     }
   })
 
+  app.use('/v1/auth', createAuthRouter({ authService }))
   app.use('/v1/catalog', createCatalogRouter({ catalogRepository }))
 
   app.use((req, res) => {

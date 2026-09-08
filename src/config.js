@@ -12,10 +12,14 @@ export function loadConfig(env = process.env) {
 
   return {
     appEnv: env.APP_ENV,
+    appUrl: env.APP_URL ?? `http://localhost:${env.PORT ?? '5000'}`,
     databaseUrl: env.DATABASE_URL,
     expiresIn: env.JWT_EXPIRES_IN,
     jwtSecret: env.JWT_SECRET,
     origin: env.ORIGIN,
     port: Number(env.PORT),
+    resetTokenTtlMs: env.RESET_TOKEN_TTL_MS != null ? Number(env.RESET_TOKEN_TTL_MS) : undefined,
+    verificationTokenTtlMs:
+      env.VERIFICATION_TOKEN_TTL_MS != null ? Number(env.VERIFICATION_TOKEN_TTL_MS) : undefined,
   }
 }
