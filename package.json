@@ -5,7 +5,7 @@
   "author": "",
   "license": "MIT",
   "type": "module",
-  "main": "app.js",
+  "main": "./src/server.js",
   "imports": {
     "#*": "./src/*"
   },
@@ -13,8 +13,8 @@
     "**/*": "prettier --write --ignore-unknown"
   },
   "scripts": {
-    "dev": "nodemon src/app.js | npx pino-pretty",
-    "start": "node src/app.js",
+    "dev": "nodemon src/server.js | npx pino-pretty",
+    "start": "node src/server.js",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
     "format": "prettier --write .",
@@ -34,6 +34,7 @@
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.12.0",
+    "pg": "^8.23.0",
     "pino": "^10.3.1",
     "zod": "^4.5.4"
   },
