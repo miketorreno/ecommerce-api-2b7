@@ -1,11 +1,14 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
 
 import { problemError } from '#http/problem.js'
 
 const BCRYPT_ROUNDS = 10
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
+const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 function generateToken() {
   return randomBytes(32).toString('base64url')
@@ -40,6 +43,17 @@ export function createAuthService({ authRepository, emailService, config = {} })
   const verificationTtlMs = config.verificationTokenTtlMs ?? DAY_MS
   const resetTtlMs = config.resetTokenTtlMs ?? HOUR_MS
   const appUrl = config.appUrl ?? 'http://localhost:5000'
+  const jwtSecret = config.jwtSecret ?? process.env.JWT_SECRET
+  const accessTokenTtlMs = config.accessTokenTtlMs ?? ACCESS_TOKEN_TTL_MS
+  const refreshTokenTtlMs = config.refreshTokenTtlMs ?? REFRESH_TOKEN_TTL_MS
+
+  function signAccessToken(user) {
+    return jwt.sign({ role: user.role }, jwtSecret, {
+      subject: user.id,
+      algorithm: 'HS256',
+      expiresIn: Math.floor(accessTokenTtlMs / 1000),
+    })
+  }
 
   return {
     async register({ email, password }) {
@@ -112,7 +126,79 @@ export function createAuthService({ authRepository, emailService, config = {} })
         throw problemError(403, 'Email not verified', 'Verify your email before logging in')
       }
 
+      const sessionId = randomUUID()
+      const refreshToken = generateToken()
+      await authRepository.createRefreshToken({
+        userId: user.id,
+        sessionId,
+        tokenHash: hashToken(refreshToken),
+        expiresAt: new Date(Date.now() + refreshTokenTtlMs),
+      })
+
+      return {
+        user: toPublicUser(user),
+        accessToken: signAccessToken(user),
+        refreshToken,
+        csrfToken: generateToken(),
+      }
+    },
+
+    async me({ userId }) {
+      const user = await authRepository.findUserById(userId)
+      if (user == null)
+        throw problemError(401, 'Authentication required', 'This session no longer exists')
       return toPublicUser(user)
+    },
+
+    async refresh({ refreshToken }) {
+      const tokenHash = hashToken(refreshToken)
+
+      const result = await authRepository.transaction(async (client) => {
+        const token = await authRepository.findRefreshToken(tokenHash, client)
+        if (token == null) return { status: 'invalid' }
+        if (token.revoked_at != null) {
+          await authRepository.revokeRefreshTokenSession(token.session_id, client)
+          return { status: 'invalid' }
+        }
+        if (new Date(token.expires_at).getTime() <= Date.now()) return { status: 'expired' }
+
+        const user = await authRepository.findUserById(token.user_id, client)
+        const nextRefreshToken = generateToken()
+        await authRepository.revokeRefreshToken(token.id, client)
+        await authRepository.createRefreshToken(
+          {
+            userId: token.user_id,
+            sessionId: token.session_id,
+            tokenHash: hashToken(nextRefreshToken),
+            expiresAt: new Date(Date.now() + refreshTokenTtlMs),
+          },
+          client
+        )
+        return { status: 'ok', user, refreshToken: nextRefreshToken }
+      })
+
+      if (result.status !== 'ok') {
+        throw problemError(
+          401,
+          'Invalid refresh token',
+          'This refresh token is not valid; log in again'
+        )
+      }
+
+      return {
+        user: toPublicUser(result.user),
+        accessToken: signAccessToken(result.user),
+        refreshToken: result.refreshToken,
+      }
+    },
+
+    async logout({ refreshToken }) {
+      const tokenHash = hashToken(refreshToken)
+      await authRepository.transaction(async (client) => {
+        const token = await authRepository.findRefreshToken(tokenHash, client)
+        if (token == null) return
+        await authRepository.revokeRefreshTokenSession(token.session_id, client)
+      })
     },
 
     async forgotPassword({ email }) {

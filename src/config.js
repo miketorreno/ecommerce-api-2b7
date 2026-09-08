@@ -19,6 +19,9 @@ export function loadConfig(env = process.env) {
     origin: env.ORIGIN,
     port: Number(env.PORT),
     resetTokenTtlMs: env.RESET_TOKEN_TTL_MS != null ? Number(env.RESET_TOKEN_TTL_MS) : undefined,
+    accessTokenTtlMs: env.ACCESS_TOKEN_TTL_MS != null ? Number(env.ACCESS_TOKEN_TTL_MS) : undefined,
+    refreshTokenTtlMs:
+      env.REFRESH_TOKEN_TTL_MS != null ? Number(env.REFRESH_TOKEN_TTL_MS) : undefined,
     verificationTokenTtlMs:
       env.VERIFICATION_TOKEN_TTL_MS != null ? Number(env.VERIFICATION_TOKEN_TTL_MS) : undefined,
   }

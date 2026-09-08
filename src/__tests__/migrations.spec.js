@@ -13,6 +13,7 @@ describe('migrations', () => {
         '0002_catalog.sql',
         '0003_seed_catalog.sql',
         '0004_auth.sql',
+        '0005_sessions.sql',
       ])
 
       await runMigrations(db.pool)
@@ -20,7 +21,7 @@ describe('migrations', () => {
       const { rows: after } = await db.pool.query(
         'SELECT count(*)::int AS count FROM schema_migrations'
       )
-      expect(after[0].count).toBe(4)
+      expect(after[0].count).toBe(5)
     } finally {
       await db.drop()
     }

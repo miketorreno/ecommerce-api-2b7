@@ -10,6 +10,14 @@ const userRowSchema = z.object({
   updated_at: z.string(),
 })
 
+const refreshTokenRowSchema = z.object({
+  id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  session_id: z.string().uuid(),
+  expires_at: z.string(),
+  revoked_at: z.string().nullable(),
+})
+
 const consumedTokenRowSchema = z.object({
   id: z.string().uuid(),
   user_id: z.string().uuid(),
@@ -59,6 +67,15 @@ export function createAuthRepository(pool) {
         if (error.code === '23505') return null
         throw error
       }
+    },
+
+    async findUserById(userId, client) {
+      const { rows } = await (client ?? pool).query(
+        `SELECT ${userColumns} FROM users WHERE id = $1`,
+        [userId]
+      )
+      if (rows.length === 0) return null
+      return userRowSchema.parse(rows[0])
     },
 
     async setVerified(userId, client) {
@@ -111,6 +128,39 @@ export function createAuthRepository(pool) {
         `UPDATE auth_tokens SET used_at = now()
          WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL`,
         [userId, purpose]
+      )
+    },
+
+    async createRefreshToken({ userId, sessionId, tokenHash, expiresAt }, client) {
+      await (client ?? pool).query(
+        `INSERT INTO refresh_tokens (user_id, session_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)`,
+        [userId, sessionId, tokenHash, expiresAt]
+      )
+    },
+
+    async findRefreshToken(tokenHash, client) {
+      const { rows } = await client.query(
+        `SELECT id, user_id, session_id, expires_at::text, revoked_at::text
+         FROM refresh_tokens
+         WHERE token_hash = $1
+         FOR UPDATE`,
+        [tokenHash]
+      )
+      if (rows.length === 0) return null
+      return refreshTokenRowSchema.parse(rows[0])
+    },
+
+    async revokeRefreshToken(id, client) {
+      await (client ?? pool).query('UPDATE refresh_tokens SET revoked_at = now() WHERE id = $1', [
+        id,
+      ])
+    },
+
+    async revokeRefreshTokenSession(sessionId, client) {
+      await (client ?? pool).query(
+        `UPDATE refresh_tokens SET revoked_at = now()
+         WHERE session_id = $1 AND revoked_at IS NULL`,
+        [sessionId]
       )
     },
   }

@@ -8,8 +8,10 @@ import { createAuthRepository } from './db/repositories/auth.js'
 import { createEmailRepository } from './db/repositories/email.js'
 import { createHealthRepository } from './db/repositories/health.js'
 import { createEmailService } from './email/index.js'
+import { createAuthMiddleware } from './http/auth.js'
 import { sendProblem } from './http/problem.js'
 import { createAuthRouter } from './routes/auth.js'
+import { createAdminRouter } from './routes/admin.js'
 import { createCatalogRouter } from './routes/catalog.js'
 import { createAuthService } from './services/auth.js'
 
@@ -38,6 +40,9 @@ export function createApp({ pool, config = {}, logger = console }) {
   const emailRepository = createEmailRepository(pool)
   const emailService = createEmailService({ emailRepository, logger })
   const authService = createAuthService({ authRepository, emailService, config })
+  const authMiddleware = createAuthMiddleware({
+    jwtSecret: config.jwtSecret ?? process.env.JWT_SECRET,
+  })
 
   app.get('/', (req, res) => {
     res.send('Welcome to the eCommerce API')
@@ -53,8 +58,14 @@ export function createApp({ pool, config = {}, logger = console }) {
     }
   })
 
-  app.use('/v1/auth', createAuthRouter({ authService }))
+  app.use('/v1/auth', createAuthRouter({ authService, authMiddleware, config }))
   app.use('/v1/catalog', createCatalogRouter({ catalogRepository }))
+  app.use(
+    '/v1/admin',
+    authMiddleware.requireAuth,
+    authMiddleware.requireAdmin,
+    createAdminRouter({ authService })
+  )
 
   app.use((req, res) => {
     sendProblem(res, {
