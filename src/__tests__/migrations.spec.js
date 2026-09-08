@@ -8,14 +8,18 @@ describe('migrations', () => {
     const db = await createTestDatabase(process.env.DATABASE_URL)
     try {
       const { rows } = await db.pool.query('SELECT name FROM schema_migrations ORDER BY name')
-      expect(rows.map((row) => row.name)).toEqual(['0001_init.sql'])
+      expect(rows.map((row) => row.name)).toEqual([
+        '0001_init.sql',
+        '0002_catalog.sql',
+        '0003_seed_catalog.sql',
+      ])
 
       await runMigrations(db.pool)
 
       const { rows: after } = await db.pool.query(
         'SELECT count(*)::int AS count FROM schema_migrations'
       )
-      expect(after[0].count).toBe(1)
+      expect(after[0].count).toBe(3)
     } finally {
       await db.drop()
     }
