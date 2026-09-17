@@ -1,0 +1,3 @@
+# Single container / VM deployment
+
+The API ships as one stateless-persistent Express container (Docker on Fly, Railway, or a VPS) rather than serverless functions. Express is built for long-lived database connections, and the in-process background jobs — the outbox publisher and the reservation/expiry sweeper — are ordinary long-running tasks (timers, restarted by the process manager) in the same deploy, gated by a Postgres advisory lock so only one instance sweeps if we scale horizontally later. Serverless would force every webhook and sweep through scheduled invocations and make connection-pool management hostile, with no benefit at this scale.
