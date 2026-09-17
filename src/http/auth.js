@@ -1,16 +1,12 @@
-import jwt from 'jsonwebtoken'
-
+import { DEFAULT_ACCESS_TTL_MS, DEFAULT_REFRESH_TTL_MS } from '#config.js'
 import { sendProblem } from '#http/problem.js'
 
 export const ACCESS_COOKIE = 'access_token'
 export const REFRESH_COOKIE = 'refresh_token'
 export const CSRF_COOKIE = 'csrf_token'
 
-export const DEFAULT_ACCESS_TTL_MS = 15 * 60 * 1000
-export const DEFAULT_REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000
-
-export function createAuthMiddleware({ jwtSecret }) {
-  function requireAuth(req, res, next) {
+export function createAuthMiddleware({ authService }) {
+  async function requireAuth(req, res, next) {
     const token = req.cookies?.[ACCESS_COOKIE]
     if (typeof token !== 'string' || token.length === 0) {
       sendProblem(res, {
@@ -21,17 +17,8 @@ export function createAuthMiddleware({ jwtSecret }) {
       return
     }
 
-    try {
-      const payload = jwt.verify(token, jwtSecret, { algorithms: ['HS256'] })
-      req.user = { id: payload.sub, role: payload.role }
-      next()
-    } catch {
-      sendProblem(res, {
-        status: 401,
-        title: 'Access token expired or invalid',
-        detail: 'Refresh the session and try again',
-      })
-    }
+    req.user = await authService.authenticate({ accessToken: token })
+    next()
   }
 
   function requireRole(role) {

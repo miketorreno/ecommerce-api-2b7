@@ -100,19 +100,22 @@ describe('sessions & access control', () => {
       expect(cookieAttributes(res, 'csrf_token')).toMatch(/SameSite=Strict/)
     })
 
-    it('builds a new session server-side on each login', async () => {
-      const email = 'session-db@example.com'
+    it('keeps separate logins independent when one session logs out', async () => {
+      const email = 'independent-sessions@example.com'
       await verifyAccount(app, db, email)
-
-      await login(app, email)
-
-      const { rows } = await db.pool.query(
-        'SELECT session_id, token_hash FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = $1)',
-        [email]
-      )
-      expect(rows).toHaveLength(1)
-      expect(rows[0].session_id).toEqual(expect.any(String))
-      expect(rows[0].token_hash).toMatch(/^[0-9a-f]{64}$/)
+      const first = await login(app, email)
+      const second = await login(app, email)
+      const csrf = cookieValue(first, 'csrf_token')
+      const loggedOut = await request(app)
+        .post('/v1/auth/logout')
+        .set('Cookie', `refresh_token=${cookieValue(first, 'refresh_token')}; csrf_token=${csrf}`)
+        .set('X-CSRF-Token', csrf)
+      expect(loggedOut.status).toBe(204)
+      const otherSession = await request(app)
+        .get('/v1/auth/me')
+        .set('Cookie', `access_token=${cookieValue(second, 'access_token')}`)
+      expect(otherSession.status).toBe(200)
+      expect(otherSession.body.user.email).toBe(email)
     })
   })
 
@@ -170,10 +173,53 @@ describe('sessions & access control', () => {
         .set('Cookie', `refresh_token=${secondRefresh}; csrf_token=${csrf}`)
         .set('X-CSRF-Token', csrf)
       expect(stillRevoked.status).toBe(401)
+
+      const savedAccess = await request(app)
+        .get('/v1/auth/me')
+        .set('Cookie', `access_token=${cookieValue(rotated, 'access_token')}`)
+      expect(savedAccess.status).toBe(401)
     })
   })
 
   describe('POST /v1/auth/logout', () => {
+    it('keeps a session revoked when logout overlaps refresh rotation', async () => {
+      const email = 'concurrent-logout@example.com'
+      await verifyAccount(app, db, email)
+      const signedIn = await login(app, email)
+      const csrf = cookieValue(signedIn, 'csrf_token')
+      const original = cookieValue(signedIn, 'refresh_token')
+      const rotated = await request(app)
+        .post('/v1/auth/refresh')
+        .set('Cookie', `refresh_token=${original}; csrf_token=${csrf}`)
+        .set('X-CSRF-Token', csrf)
+      expect(rotated.status).toBe(200)
+      const [loggedOut, refreshed] = await Promise.all([
+        request(app)
+          .post('/v1/auth/logout')
+          .set('Cookie', `refresh_token=${original}; csrf_token=${csrf}`)
+          .set('X-CSRF-Token', csrf),
+        request(app)
+          .post('/v1/auth/refresh')
+          .set(
+            'Cookie',
+            `refresh_token=${cookieValue(rotated, 'refresh_token')}; csrf_token=${csrf}`
+          )
+          .set('X-CSRF-Token', csrf),
+      ])
+      expect(loggedOut.status).toBe(204)
+      expect([200, 401]).toContain(refreshed.status)
+      const latest = refreshed.status === 200 ? refreshed : rotated
+      const me = await request(app)
+        .get('/v1/auth/me')
+        .set('Cookie', `access_token=${cookieValue(latest, 'access_token')}`)
+      expect(me.status).toBe(401)
+      const retry = await request(app)
+        .post('/v1/auth/refresh')
+        .set('Cookie', `refresh_token=${cookieValue(latest, 'refresh_token')}; csrf_token=${csrf}`)
+        .set('X-CSRF-Token', csrf)
+      expect(retry.status).toBe(401)
+    })
+
     it('revokes the session and clears the session cookies', async () => {
       const email = 'logout@example.com'
       await verifyAccount(app, db, email)
@@ -198,6 +244,11 @@ describe('sessions & access control', () => {
 
       const me = await agent.get('/v1/auth/me')
       expect(me.status).toBe(401)
+
+      const savedAccess = await request(app)
+        .get('/v1/auth/me')
+        .set('Cookie', `access_token=${cookieValue(loginRes, 'access_token')}`)
+      expect(savedAccess.status).toBe(401)
     })
   })
 
@@ -245,6 +296,30 @@ describe('sessions & access control', () => {
   })
 
   describe('access token expiry', () => {
+    it('renews an expired access token using a valid refresh token', async () => {
+      const email = 'renew-expired@example.com'
+      await verifyAccount(app, db, email)
+      const signedIn = await login(app, email)
+      const claims = jwt.verify(cookieValue(signedIn, 'access_token'), TEST_JWT_SECRET)
+      expect(claims.exp - claims.iat).toBe(900)
+      const expired = jwt.sign({ ...claims, exp: claims.iat - 1 }, TEST_JWT_SECRET)
+      const csrf = cookieValue(signedIn, 'csrf_token')
+      const refreshToken = cookieValue(signedIn, 'refresh_token')
+
+      const before = await request(app).get('/v1/auth/me').set('Cookie', `access_token=${expired}`)
+      expect(before.status).toBe(401)
+      const renewed = await request(app)
+        .post('/v1/auth/refresh')
+        .set('Cookie', `access_token=${expired}; refresh_token=${refreshToken}; csrf_token=${csrf}`)
+        .set('X-CSRF-Token', csrf)
+      expect(renewed.status).toBe(200)
+      const after = await request(app)
+        .get('/v1/auth/me')
+        .set('Cookie', `access_token=${cookieValue(renewed, 'access_token')}`)
+      expect(after.status).toBe(200)
+      expect(after.body.user.email).toBe(email)
+    })
+
     it('rejects a request with an expired access token and no valid refresh', async () => {
       const email = 'expired-me@example.com'
       await verifyAccount(app, db, email)
@@ -269,6 +344,51 @@ describe('sessions & access control', () => {
         .set('X-CSRF-Token', 't')
       expect(refresh.status).toBe(401)
       expect(refresh.body.title).toBe('Invalid refresh token')
+    })
+
+    it('rejects refresh for a session whose user no longer exists without issuing tokens', async () => {
+      const email = 'deleted-user@example.com'
+      await verifyAccount(app, db, email)
+      const signedIn = await login(app, email)
+      const csrf = cookieValue(signedIn, 'csrf_token')
+
+      await db.pool.query('DELETE FROM users WHERE email = $1', [email])
+
+      const res = await request(app)
+        .post('/v1/auth/refresh')
+        .set(
+          'Cookie',
+          `refresh_token=${cookieValue(signedIn, 'refresh_token')}; csrf_token=${csrf}`
+        )
+        .set('X-CSRF-Token', csrf)
+
+      expect(res.status).toBe(401)
+      expect(res.body.title).toBe('Invalid refresh token')
+      expect(res.headers['set-cookie']).toBeUndefined()
+    })
+
+    it('rejects refresh with an expired refresh token', async () => {
+      const email = 'expired-refresh@example.com'
+      await verifyAccount(app, db, email)
+      const signedIn = await login(app, email)
+      const csrf = cookieValue(signedIn, 'csrf_token')
+
+      await db.pool.query(
+        `UPDATE refresh_tokens SET expires_at = now() - interval '1 minute'
+         WHERE token_hash = encode(sha256($1::bytea), 'hex')`,
+        [cookieValue(signedIn, 'refresh_token')]
+      )
+
+      const res = await request(app)
+        .post('/v1/auth/refresh')
+        .set(
+          'Cookie',
+          `refresh_token=${cookieValue(signedIn, 'refresh_token')}; csrf_token=${csrf}`
+        )
+        .set('X-CSRF-Token', csrf)
+
+      expect(res.status).toBe(401)
+      expect(res.body.title).toBe('Session expired')
     })
   })
 

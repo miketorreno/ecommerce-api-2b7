@@ -40,9 +40,7 @@ export function createApp({ pool, config = {}, logger = console }) {
   const emailRepository = createEmailRepository(pool)
   const emailService = createEmailService({ emailRepository, logger })
   const authService = createAuthService({ authRepository, emailService, config })
-  const authMiddleware = createAuthMiddleware({
-    jwtSecret: config.jwtSecret ?? process.env.JWT_SECRET,
-  })
+  const authMiddleware = createAuthMiddleware({ authService })
 
   app.get('/', (req, res) => {
     res.send('Welcome to the eCommerce API')

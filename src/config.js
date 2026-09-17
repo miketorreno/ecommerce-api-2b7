@@ -4,6 +4,9 @@ dotenv.config()
 
 const REQUIRED_VARS = ['APP_ENV', 'PORT', 'JWT_SECRET', 'JWT_EXPIRES_IN', 'DATABASE_URL', 'ORIGIN']
 
+export const DEFAULT_ACCESS_TTL_MS = 15 * 60 * 1000
+export const DEFAULT_REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
 export function loadConfig(env = process.env) {
   const missing = REQUIRED_VARS.filter((key) => !env[key])
   if (missing.length > 0) {

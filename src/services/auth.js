@@ -1,14 +1,14 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import { z } from 'zod'
 
+import { DEFAULT_ACCESS_TTL_MS, DEFAULT_REFRESH_TTL_MS } from '#config.js'
 import { problemError } from '#http/problem.js'
 
 const BCRYPT_ROUNDS = 10
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
-const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000
-const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 function generateToken() {
   return randomBytes(32).toString('base64url')
@@ -44,11 +44,11 @@ export function createAuthService({ authRepository, emailService, config = {} })
   const resetTtlMs = config.resetTokenTtlMs ?? HOUR_MS
   const appUrl = config.appUrl ?? 'http://localhost:5000'
   const jwtSecret = config.jwtSecret ?? process.env.JWT_SECRET
-  const accessTokenTtlMs = config.accessTokenTtlMs ?? ACCESS_TOKEN_TTL_MS
-  const refreshTokenTtlMs = config.refreshTokenTtlMs ?? REFRESH_TOKEN_TTL_MS
+  const accessTokenTtlMs = config.accessTokenTtlMs ?? DEFAULT_ACCESS_TTL_MS
+  const refreshTokenTtlMs = config.refreshTokenTtlMs ?? DEFAULT_REFRESH_TTL_MS
 
-  function signAccessToken(user) {
-    return jwt.sign({ role: user.role }, jwtSecret, {
+  function signAccessToken(user, sessionId) {
+    return jwt.sign({ role: user.role, sid: sessionId }, jwtSecret, {
       subject: user.id,
       algorithm: 'HS256',
       expiresIn: Math.floor(accessTokenTtlMs / 1000),
@@ -137,10 +137,38 @@ export function createAuthService({ authRepository, emailService, config = {} })
 
       return {
         user: toPublicUser(user),
-        accessToken: signAccessToken(user),
+        accessToken: signAccessToken(user, sessionId),
         refreshToken,
         csrfToken: generateToken(),
       }
+    },
+
+    async authenticate({ accessToken }) {
+      let claims
+      try {
+        claims = z
+          .object({
+            sub: z.string().uuid(),
+            sid: z.string().uuid(),
+            role: z.enum(['customer', 'admin']),
+            exp: z.number().int(),
+          })
+          .parse(jwt.verify(accessToken, jwtSecret, { algorithms: ['HS256'] }))
+      } catch {
+        throw problemError(
+          401,
+          'Access token expired or invalid',
+          'Refresh the session and try again'
+        )
+      }
+      const active = await authRepository.isSessionActive({
+        userId: claims.sub,
+        sessionId: claims.sid,
+      })
+      if (!active) {
+        throw problemError(401, 'Authentication required', 'This session no longer exists')
+      }
+      return { id: claims.sub, role: claims.role }
     },
 
     async me({ userId }) {
@@ -163,6 +191,8 @@ export function createAuthService({ authRepository, emailService, config = {} })
         if (new Date(token.expires_at).getTime() <= Date.now()) return { status: 'expired' }
 
         const user = await authRepository.findUserById(token.user_id, client)
+        if (user == null) return { status: 'invalid' }
+
         const nextRefreshToken = generateToken()
         await authRepository.revokeRefreshToken(token.id, client)
         await authRepository.createRefreshToken(
@@ -174,10 +204,13 @@ export function createAuthService({ authRepository, emailService, config = {} })
           },
           client
         )
-        return { status: 'ok', user, refreshToken: nextRefreshToken }
+        return { status: 'ok', user, sessionId: token.session_id, refreshToken: nextRefreshToken }
       })
 
       if (result.status !== 'ok') {
+        if (result.status === 'expired') {
+          throw problemError(401, 'Session expired', 'This session has expired; log in again')
+        }
         throw problemError(
           401,
           'Invalid refresh token',
@@ -187,7 +220,7 @@ export function createAuthService({ authRepository, emailService, config = {} })
 
       return {
         user: toPublicUser(result.user),
-        accessToken: signAccessToken(result.user),
+        accessToken: signAccessToken(result.user, result.sessionId),
         refreshToken: result.refreshToken,
       }
     },

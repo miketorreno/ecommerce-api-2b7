@@ -138,7 +138,28 @@ export function createAuthRepository(pool) {
       )
     },
 
+    async isSessionActive({ userId, sessionId }) {
+      const { rows } = await pool.query(
+        `SELECT EXISTS (
+          SELECT 1 FROM refresh_tokens
+          WHERE user_id = $1 AND session_id = $2
+            AND revoked_at IS NULL AND expires_at > now()
+        ) AS active`,
+        [userId, sessionId]
+      )
+      return z.object({ active: z.boolean() }).parse(rows[0]).active
+    },
+
     async findRefreshToken(tokenHash, client) {
+      const lookup = await client.query(
+        'SELECT session_id FROM refresh_tokens WHERE token_hash = $1',
+        [tokenHash]
+      )
+      if (lookup.rows.length === 0) return null
+      const { session_id: sessionId } = z
+        .object({ session_id: z.string().uuid() })
+        .parse(lookup.rows[0])
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [sessionId])
       const { rows } = await client.query(
         `SELECT id, user_id, session_id, expires_at::text, revoked_at::text
          FROM refresh_tokens
