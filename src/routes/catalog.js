@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { decodeCursor } from '#db/repositories/catalog.js'
-import { problemError, sendProblem } from '#http/problem.js'
+import { problemError, sendProblem, zodIssueDetail } from '#http/problem.js'
 
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -16,10 +16,7 @@ const listQuerySchema = z.object({
 function parseListQuery(query) {
   const parsed = listQuerySchema.safeParse(query)
   if (!parsed.success) {
-    const detail = parsed.error.issues
-      .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
-      .join('; ')
-    throw problemError(400, 'Invalid query parameters', detail)
+    throw problemError(400, 'Invalid query parameters', zodIssueDetail(parsed.error.issues))
   }
 
   const data = parsed.data

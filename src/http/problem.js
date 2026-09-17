@@ -10,3 +10,7 @@ export function problemError(status, title, message) {
   error.title = title
   return error
 }
+
+export function zodIssueDetail(issues) {
+  return issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')
+}
